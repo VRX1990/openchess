@@ -1,0 +1,122 @@
+{
+  "entities": {
+    "UserPublicProfile": {
+      "title": "UserPublicProfile",
+      "description": "Publicly visible OpenChess player profile and rating summary (no PII).",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "description": "Firebase Auth UID of the player.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "username": {
+          "type": "string",
+          "description": "Unique OpenChess handle.",
+          "minLength": 2,
+          "maxLength": 30,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "country": {
+          "type": "string",
+          "description": "ISO country code or INT.",
+          "minLength": 2,
+          "maxLength": 8,
+          "pattern": "^[A-Z]{2,8}$"
+        },
+        "bio": {
+          "type": "string",
+          "description": "Player bio shown on profile.",
+          "minLength": 0,
+          "maxLength": 240
+        },
+        "rapidRating": {
+          "type": "number",
+          "description": "Current Rapid rating."
+        },
+        "blitzRating": {
+          "type": "number",
+          "description": "Current Blitz rating."
+        },
+        "bulletRating": {
+          "type": "number",
+          "description": "Current Bullet rating."
+        },
+        "puzzleRating": {
+          "type": "number",
+          "description": "Current Puzzle rating."
+        },
+        "leaguePoints": {
+          "type": "number",
+          "description": "Accumulated league points."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp."
+        }
+      },
+      "required": [
+        "ownerId",
+        "username",
+        "country",
+        "rapidRating",
+        "blitzRating",
+        "bulletRating",
+        "puzzleRating",
+        "leaguePoints",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "UserPrivateAccount": {
+      "title": "UserPrivateAccount",
+      "description": "Isolated private account verification data containing PII (email).",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "description": "Firebase Auth UID of the account owner.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "description": "Verified Google email address.",
+          "minLength": 6,
+          "maxLength": 254
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp."
+        }
+      },
+      "required": ["ownerId", "email", "createdAt", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserPublicProfile" },
+      "description": "Public player profile documents keyed by Firebase Auth UID."
+    },
+    "/users/{userId}/private/{docId}": {
+      "schema": { "$ref": "#/entities/UserPrivateAccount" },
+      "description": "Private PII subcollection accessible only to the authenticated owner."
+    }
+  }
+}
