@@ -326,6 +326,9 @@ export function PlayView({
   const clearCoachMoveToast = useCallback(() => {
     setCoachMoveToast(null);
   }, []);
+  // Premove: piece + destination chosen while it's the opponent's turn —
+  // played automatically the moment our turn arrives (if still legal).
+  const [premove, setPremove] = useState<{ from: string; to: string } | null>(null);
   const [coachReplyNote, setCoachReplyNote] = useState<string | null>(null);
   const [queuedCoachPrompt, setQueuedCoachPrompt] = useState<{ id: number; text: string } | null>(
     null,
@@ -822,16 +825,26 @@ export function PlayView({
 
         // Coach mode: classify the coach's own reply and move the floating
         // badge onto the coach's piece (replacing the player's badge).
+        // Deferred slightly so the eval work never blocks the move animation.
         if (isCoachMode && move.color !== playerColor) {
-          const coachLesson = evaluateCoachStudentMove(
-            fenBefore,
-            move.from,
-            move.to,
-            move.promotion ?? 'q',
-            game.history().length - 1,
-            activeCoach.id,
-          );
-          showCoachMoveToast(move.to, coachLesson?.quality ?? 'Good', move.san);
+          const clsFen = fenBefore;
+          const clsFrom = move.from;
+          const clsTo = move.to;
+          const clsSan = move.san;
+          const clsPromo: PieceSymbol = move.promotion ?? 'q';
+          const clsPly = game.history().length - 1;
+          const clsCoach = activeCoach.id;
+          window.setTimeout(() => {
+            const coachLesson = evaluateCoachStudentMove(
+              clsFen,
+              clsFrom,
+              clsTo,
+              clsPromo,
+              clsPly,
+              clsCoach,
+            );
+            showCoachMoveToast(clsTo, coachLesson?.quality ?? 'Good', clsSan);
+          }, 80);
         }
 
         if (move.color === 'w' && tc.incrementSeconds > 0) {
@@ -869,10 +882,34 @@ export function PlayView({
     ],
   );
 
+  // Premove execution: the moment it becomes our turn, play the remembered
+  // move — if it's still legal in the new position (queen on promotion).
+  useEffect(() => {
+    if (!premove) return;
+    if (gameOverState || viewPly !== null || opponentType === 'local') {
+      setPremove(null);
+      return;
+    }
+    if (liveChess.turn() !== playerColor) return;
+    const pending = premove;
+    setPremove(null);
+    let legal = false;
+    try {
+      const probe = new Chess(liveChess.fen());
+      legal = Boolean(probe.move({ from: pending.from, to: pending.to, promotion: 'q' }));
+    } catch {
+      legal = false;
+    }
+    if (legal) {
+      applyMoveOnBoard(pending.from, pending.to, 'q', true);
+    }
+  }, [fen, premove, gameOverState, viewPly, playerColor, opponentType, liveChess, applyMoveOnBoard]);
+
   const startNewGame = useCallback(
     (nextColor?: Color, nextTc?: TimeControl, keepOnlineMode = false) => {
       if (botTimeoutRef.current) window.clearTimeout(botTimeoutRef.current);
       clearCoachMoveToast();
+      setPremove(null);
       if (!keepOnlineMode && (opponentType === 'online-ws' || opponentType === 'online-lichess')) {
         setOpponentType('bot');
         wsRef.current?.close();
@@ -977,6 +1014,8 @@ export function PlayView({
   }, [onActiveGameChange]);
 
   // Connect live WebSocket room when in online-ws mode
+  const [wsReconnectNonce, setWsReconnectNonce] = useState(0);
+
   useEffect(() => {
     if (opponentType !== 'online-ws') {
       wsRef.current?.close();
@@ -988,20 +1027,47 @@ export function PlayView({
     const ws = new WebSocket(`${proto}//${window.location.host}/ws/chess`);
     wsRef.current = ws;
 
+    // App-level keepalive: some proxies/edge networks drop idle WebSockets
+    // after ~1-2 minutes. Ping every 25s so the connection stays up, and
+    // auto-reconnect (rejoining the same room) if it still drops.
+    const pingTimer = window.setInterval(() => {
+      if (ws.readyState === WebSocket.OPEN) {
+        try {
+          ws.send(JSON.stringify({ type: 'ping' }));
+        } catch {
+          // ignore
+        }
+      }
+    }, 25_000);
+    let closedIntentionally = false;
+    let reconnectTimer: number | null = null;
+
     ws.onopen = () => {
-      const action = preset?.wsAction ?? (preset?.wsRoomId ? 'join' : 'create');
+      const existingRoomId = latestOnlineRef.current.roomId;
+      const action =
+        preset?.wsAction ?? (preset?.wsRoomId || existingRoomId ? 'join' : 'create');
       const avatarUrl = loadUserAvatar(lichessUsername) || undefined;
       const flag = lichessFlag || undefined;
-      if (action === 'join' && (preset?.wsRoomId || onlineInfo.roomId)) {
+      const speedCat: 'bullet' | 'blitz' | 'rapid' =
+        tc.initialSeconds < 180 ? 'bullet' : tc.initialSeconds < 480 ? 'blitz' : 'rapid';
+      const guestPerfs = loadGuestPerfs();
+      const selfElo =
+        (speedCat === 'bullet'
+          ? lichessPerfs?.bullet?.rating
+          : speedCat === 'blitz'
+            ? lichessPerfs?.blitz?.rating
+            : lichessPerfs?.rapid?.rating) ?? guestPerfs[speedCat].rating;
+      if (action === 'join' && (preset?.wsRoomId || existingRoomId)) {
         ws.send(
           JSON.stringify({
             type: 'join_room',
             token: lichessToken || undefined,
-            roomId: preset?.wsRoomId || onlineInfo.roomId,
+            roomId: preset?.wsRoomId || existingRoomId,
             preferredColor: preset?.color === 'w' || preset?.color === 'b' ? preset.color : undefined,
             name: lichessUsername ?? 'You',
             avatarUrl,
             flag,
+            playerElo: selfElo,
           }),
         );
       } else {
@@ -1016,6 +1082,7 @@ export function PlayView({
             initialSeconds: tc.initialSeconds,
             incrementSeconds: tc.incrementSeconds,
             color: preset?.color === 'b' ? 'b' : preset?.color === 'w' ? 'w' : 'random',
+            playerElo: selfElo,
           }),
         );
       }
@@ -1151,12 +1218,29 @@ export function PlayView({
       setOnlineInfo((prev) => ({ ...prev, error: 'Live WebSocket disconnected.' }));
     };
 
+    ws.onclose = () => {
+      window.clearInterval(pingTimer);
+      if (wsRef.current === ws) wsRef.current = null;
+      if (closedIntentionally) return;
+      // Unexpected drop — auto-reconnect and rejoin the room we were in.
+      setOnlineInfo((prev) => ({
+        ...prev,
+        error: 'Connection lost — reconnecting to the live game...',
+      }));
+      reconnectTimer = window.setTimeout(() => {
+        setWsReconnectNonce((n) => n + 1);
+      }, 2500);
+    };
+
     return () => {
+      closedIntentionally = true;
+      window.clearInterval(pingTimer);
+      if (reconnectTimer) window.clearTimeout(reconnectTimer);
       ws.close();
       if (wsRef.current === ws) wsRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [opponentType, preset?.nonce]);
+  }, [opponentType, preset?.nonce, wsReconnectNonce]);
 
   // Subscribe to Lichess Board API SSE stream when in online-lichess mode
   useEffect(() => {
@@ -1524,6 +1608,7 @@ export function PlayView({
     setCoachFeedback(null);
     setCoachReplyNote(null);
     clearCoachMoveToast();
+    setPremove(null);
     const last = targetHistory[targetHistory.length - 1];
     setLastMove(
       last
@@ -2719,73 +2804,32 @@ export function PlayView({
                 </div>
               </div>
             ) : isCoachMode ? (
-              <div className="mb-1.5 p-2.5 rounded-xl bg-[#262421] border border-[#81B64C]/35 flex items-start gap-2.5 shadow-sm">
-                <button
-                  type="button"
-                  onClick={() => setCoachPickerOpen(true)}
-                  title={`Switch Coach (${activeCoach.name})`}
-                  className="w-9 h-9 rounded-lg overflow-hidden bg-[#1A1917] border border-[#81B64C]/50 shrink-0 cursor-pointer hover:ring-2 hover:ring-[#81B64C]"
-                >
-                  <BotAvatar id={activeCoach.id} />
-                </button>
-                <div className="min-w-0 flex-1 space-y-1">
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="flex items-center gap-1.5 min-w-0">
-                      {coachFeedback && <MoveBadge quality={coachFeedback.quality} size="sm" />}
-                      <span className="text-xs font-extrabold text-white truncate">
-                        {coachFeedback
-                          ? coachFeedback.headline
-                          : `${activeCoach.name} · ${activeCoachLevel.label} (${activeCoachLevel.elo})`}
-                      </span>
-                    </div>
-                    <div className="flex items-center gap-1.5 shrink-0 flex-wrap justify-end">
-                      <button
-                        type="button"
-                        onClick={() => setCoachPickerOpen(true)}
-                        className="text-[11px] font-bold px-2 py-0.5 rounded-md bg-[#312E2A] hover:bg-[#3D3A34] text-white cursor-pointer whitespace-nowrap"
-                      >
-                        Switch Coach
-                      </button>
-                      <select
-                        aria-label="Coach strength"
-                        value={coachStrength}
-                        onChange={(e) => {
-                          const next = e.target.value as CoachStrengthId;
-                          setCoachStrength(next);
-                          saveSelectedCoachStrength(next);
-                        }}
-                        className="text-[11px] font-bold px-1.5 py-0.5 rounded-md bg-[#1A1917] border border-white/15 text-[#DEDAD2] cursor-pointer focus:outline-none focus:border-[#81B64C]"
-                        title="Adjust Coach playing strength"
-                      >
-                        {COACH_STRENGTH_LEVELS.map((lvl) => (
-                          <option key={lvl.id} value={lvl.id}>
-                            {lvl.label} ({lvl.elo})
-                          </option>
-                        ))}
-                      </select>
-                      {coachFeedback && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setQueuedCoachPrompt({
-                              id: Date.now(),
-                              text: `Explain my move ${coachFeedback.san} (${coachFeedback.quality}) and what plan to follow next.`,
-                            });
-                            setRightTab('tutor');
-                            if (typeof window !== 'undefined' && window.innerWidth < 1024) {
-                              setMobileSheet('tutor');
-                            }
-                          }}
-                          className="text-[11px] font-bold px-2 py-0.5 rounded-md bg-[#312E2A] hover:bg-[#3D3A34] text-[#AEE076] cursor-pointer whitespace-nowrap"
-                        >
-                          Ask Why?
-                        </button>
-                      )}
+              <div className="mb-1.5 p-2.5 rounded-xl bg-[#262421] border border-[#81B64C]/35 shadow-sm">
+                <div className="flex items-start gap-2.5">
+                  <button
+                    type="button"
+                    onClick={() => setCoachPickerOpen(true)}
+                    title={`Switch Coach (${activeCoach.name})`}
+                    className="w-9 h-9 rounded-lg overflow-hidden bg-[#1A1917] border border-[#81B64C]/50 shrink-0 cursor-pointer hover:ring-2 hover:ring-[#81B64C]"
+                  >
+                    <BotAvatar id={activeCoach.id} />
+                  </button>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-1.5 min-w-0">
+                        <span className="text-xs font-extrabold text-white truncate">
+                          {activeCoach.name}
+                        </span>
+                        <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-[#1A1917] border border-white/10 text-[#AEE076] whitespace-nowrap shrink-0">
+                          {activeCoachLevel.label} · {activeCoachLevel.elo}
+                        </span>
+                      </div>
                       <button
                         type="button"
                         onClick={() => setCoachGuard((g) => !g)}
                         aria-pressed={coachGuard}
-                        className={`text-[11px] font-bold px-2 py-0.5 rounded-md border whitespace-nowrap cursor-pointer ${
+                        title="Blunder Guard: pause and warn when you hang a piece"
+                        className={`text-[11px] font-bold px-2 py-0.5 rounded-md border whitespace-nowrap cursor-pointer shrink-0 ${
                           coachGuard
                             ? 'bg-[#81B64C]/20 border-[#81B64C]/60 text-[#AEE076]'
                             : 'bg-[#1A1917] border-white/10 text-[#9E998F]'
@@ -2794,16 +2838,68 @@ export function PlayView({
                         Guard {coachGuard ? 'On' : 'Off'}
                       </button>
                     </div>
-                  </div>
-                  <p className="text-xs text-[#DEDAD2] leading-snug">
-                    {coachFeedback
-                      ? coachFeedback.explanation
-                      : `${activeCoach.specialty}: Make your opening move — I'll grade each turn, catch hanging pieces, and explain my replies.`}
-                  </p>
-                  {coachReplyNote && (
-                    <p className="text-[11px] text-[#AEE076] leading-snug">
-                      {coachReplyNote}
+                    {coachFeedback && (
+                      <div className="flex items-center gap-1.5 mt-1 min-w-0">
+                        <MoveBadge quality={coachFeedback.quality} size="sm" />
+                        <span className="text-xs font-extrabold text-[#F2F0EC] truncate">
+                          {coachFeedback.headline}
+                        </span>
+                      </div>
+                    )}
+                    <p className="text-xs text-[#DEDAD2] leading-snug mt-0.5">
+                      {coachFeedback
+                        ? coachFeedback.explanation
+                        : `${activeCoach.specialty}: Make your opening move — I'll grade each turn, catch hanging pieces, and explain my replies.`}
                     </p>
+                    {coachReplyNote && (
+                      <p className="text-[11px] text-[#AEE076] leading-snug mt-1">
+                        {coachReplyNote}
+                      </p>
+                    )}
+                  </div>
+                </div>
+                <div className="flex items-center gap-1.5 flex-wrap mt-2 pt-2 border-t border-white/10">
+                  <button
+                    type="button"
+                    onClick={() => setCoachPickerOpen(true)}
+                    className="text-[11px] font-bold px-2 py-1 rounded-md bg-[#312E2A] hover:bg-[#3D3A34] text-white cursor-pointer whitespace-nowrap"
+                  >
+                    Switch Coach
+                  </button>
+                  <select
+                    aria-label="Coach strength"
+                    value={coachStrength}
+                    onChange={(e) => {
+                      const next = e.target.value as CoachStrengthId;
+                      setCoachStrength(next);
+                      saveSelectedCoachStrength(next);
+                    }}
+                    className="text-[11px] font-bold px-1.5 py-1 rounded-md bg-[#1A1917] border border-white/15 text-[#DEDAD2] cursor-pointer focus:outline-none focus:border-[#81B64C]"
+                    title="Adjust Coach playing strength"
+                  >
+                    {COACH_STRENGTH_LEVELS.map((lvl) => (
+                      <option key={lvl.id} value={lvl.id}>
+                        Strength: {lvl.label}
+                      </option>
+                    ))}
+                  </select>
+                  {coachFeedback && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setQueuedCoachPrompt({
+                          id: Date.now(),
+                          text: `Explain my move ${coachFeedback.san} (${coachFeedback.quality}) and what plan to follow next.`,
+                        });
+                        setRightTab('tutor');
+                        if (typeof window !== 'undefined' && window.innerWidth < 1024) {
+                          setMobileSheet('tutor');
+                        }
+                      }}
+                      className="text-[11px] font-bold px-2 py-1 rounded-md bg-[#312E2A] hover:bg-[#3D3A34] text-[#AEE076] cursor-pointer whitespace-nowrap ml-auto"
+                    >
+                      Ask Why?
+                    </button>
                   )}
                 </div>
               </div>
@@ -2882,6 +2978,8 @@ export function PlayView({
                       : null
                   }
                   moveToast={isCoachMode && viewPly === null ? coachMoveToast : null}
+                  premove={premove}
+                  onPremove={opponentType !== 'local' ? setPremove : undefined}
                   bestMoveArrow={
                     cloudArrow ??
                     (!isOnlineMode && hintSquares?.from && hintSquares?.to

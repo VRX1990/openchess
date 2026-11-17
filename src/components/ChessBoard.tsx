@@ -72,6 +72,8 @@ interface ChessBoardProps {
   bestMoveArrow?: { from: string; to: string } | null;
   highlightSquares?: { square: string; color: 'green' | 'red' | 'yellow' | 'blue' }[];
   extraArrows?: { from: string; to: string; color?: 'green' | 'red' | 'yellow' | 'blue' }[];
+  premove?: { from: string; to: string } | null;
+  onPremove?: (move: { from: string; to: string }) => void;
   hideCoordinates?: boolean;
   onSquareClick?: (sq: Square) => void;
   theme?: BoardTheme;
@@ -109,6 +111,8 @@ export function ChessBoard({
   bestMoveArrow = null,
   highlightSquares = [],
   extraArrows = [],
+  premove = null,
+  onPremove,
   hideCoordinates = false,
   onSquareClick,
   theme = 'green',
@@ -265,6 +269,14 @@ export function ChessBoard({
   );
 
   const attemptMove = (from: Square, to: Square, viaDrag = false) => {
+    // Premove: it's the opponent's turn — remember piece + destination instead
+    // of moving now; PlayView plays it automatically when our turn arrives.
+    if (onPremove && allowedColor !== 'both' && allowedColor !== activeTurn) {
+      onPremove({ from, to });
+      setDragState(null);
+      setSelectedSquare(null);
+      return true;
+    }
     const piece = chess.get(from);
     if (!piece) return false;
     const moves = chess.moves({ square: from, verbose: true });
@@ -315,6 +327,24 @@ export function ChessBoard({
     const piece = chess.get(sq);
     const canControlTurn = allowedColor === 'both' || allowedColor === activeTurn;
 
+    // Premove: while it's the opponent's turn, pick a piece and a destination
+    // — it will be played automatically when our turn arrives.
+    if (!canControlTurn && onPremove) {
+      if (selectedSquare) {
+        if (sq === selectedSquare) {
+          setSelectedSquare(null);
+          return;
+        }
+        onPremove({ from: selectedSquare, to: sq });
+        setSelectedSquare(null);
+        return;
+      }
+      if (piece && piece.color === allowedColor) {
+        setSelectedSquare(sq);
+      }
+      return;
+    }
+
     if (selectedSquare && legalMovesFromSelected.has(sq)) {
       attemptMove(selectedSquare, sq, false);
       return;
@@ -350,7 +380,13 @@ export function ChessBoard({
 
     const piece = chess.get(sq);
     const canControlTurn = allowedColor === 'both' || allowedColor === activeTurn;
-    if (!piece || piece.color !== activeTurn || !canControlTurn) return;
+    const premoveWindow = Boolean(onPremove) && allowedColor !== 'both' && !canControlTurn;
+    if (!piece) return;
+    if (!canControlTurn) {
+      // Premove window: only our own pieces can be picked up, and the drop
+      // registers a premove instead of a real move.
+      if (!premoveWindow || piece.color !== allowedColor) return;
+    } else if (piece.color !== activeTurn) return;
 
     const rect = boardRef.current?.getBoundingClientRect();
     const squareSize = rect ? rect.width / 8 : 48;
@@ -582,6 +618,11 @@ export function ChessBoard({
                   />
                 )}
 
+                {/* Premove indicator (piece + destination chosen on opponent's turn) */}
+                {premove && (premove.from === sq || premove.to === sq) && (
+                  <span className="absolute inset-[8%] rounded-[4px] border-2 border-[#5B8DBE]/90 bg-[#5B8DBE]/25 pointer-events-none z-10" />
+                )}
+
                 {/* Piece with real square-to-square slide / knight hop animation */}
                 {piece && !isBeingDragged && (
                   <div
@@ -800,12 +841,11 @@ export function ChessBoard({
           }}
           className="absolute z-45 pointer-events-none animate-badge-pop"
         >
-          <div
-            style={{ borderColor: toastMeta.bg }}
-            className="relative p-1 rounded-lg bg-[#1D1B18]/95 border-2 shadow-[0_6px_20px_rgba(0,0,0,0.65)] flex items-center justify-center"
-          >
-            <MoveBadge quality={moveToast.quality} size="md" />
-          </div>
+          <MoveBadge
+            quality={moveToast.quality}
+            size="sm"
+            className="drop-shadow-[0_2px_5px_rgba(0,0,0,0.8)]"
+          />
         </div>
       )}
     </div>

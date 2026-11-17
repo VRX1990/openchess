@@ -2081,6 +2081,60 @@ function setupLiveWebSocketServer(
     return null;
   };
 
+  // Lichess-token identities (lip_…): resolved async in the background and
+  // cached, so opponents connecting with a Lichess token still show their
+  // real username, rating, title and flag in live games.
+  const lichessIdentityCache = new Map<
+    string,
+    { username: string; rating?: number; title?: string; flag?: string; fetchedAt: number }
+  >();
+  const lichessIdentityInflight = new Set<string>();
+
+  const queueLichessIdentity = (token: string): void => {
+    const key = token.slice(0, 32);
+    const cached = lichessIdentityCache.get(key);
+    if (cached && Date.now() - cached.fetchedAt < 300_000) return;
+    if (lichessIdentityInflight.has(key)) return;
+    lichessIdentityInflight.add(key);
+    void (async () => {
+      try {
+        const r = await fetch('https://lichess.org/api/user/me', {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            Accept: 'application/json',
+            'User-Agent': 'OpenChess/1.0',
+          },
+          signal: AbortSignal.timeout(5000),
+        });
+        if (!r.ok) return;
+        const j = (await r.json()) as Record<string, any>;
+        const username = String(j.username || j.id || '').trim();
+        if (!username) return;
+        const perfs = j.perfs ?? {};
+        const pick = (p: any): number | undefined =>
+          p && typeof p.rating === 'number' && (p.games ?? 0) > 0 ? Math.round(p.rating) : undefined;
+        const rating = pick(perfs.rapid) ?? pick(perfs.blitz) ?? pick(perfs.bullet);
+        lichessIdentityCache.set(key, {
+          username,
+          rating,
+          title: typeof j.title === 'string' ? j.title : undefined,
+          flag: j.profile?.country,
+          fetchedAt: Date.now(),
+        });
+      } catch {
+        // offline/unreachable — cached entry stays absent; will retry next message
+      } finally {
+        lichessIdentityInflight.delete(key);
+      }
+    })();
+  };
+
+  const getLichessIdentity = (token: string) => {
+    if (!token.startsWith('lip_')) return null;
+    const cached = lichessIdentityCache.get(token.slice(0, 32));
+    return cached && Date.now() - cached.fetchedAt < 600_000 ? cached : null;
+  };
+
   const resolveSpeedKey = (initialSeconds: number): 'bullet' | 'blitz' | 'rapid' =>
     initialSeconds < 180 ? 'bullet' : initialSeconds < 480 ? 'blitz' : 'rapid';
 
@@ -2760,8 +2814,35 @@ function setupLiveWebSocketServer(
     return room;
   };
 
+  // Heartbeat: ping every socket; terminate ones that miss a pong. Keeps
+  // connections from silently dying behind proxies/edge (Cloudflare) and
+  // frees rooms when clients vanish without a close frame.
+  const socketAlive = new Set<WebSocket>();
+  const heartbeatTimer = setInterval(() => {
+    for (const ws of wss.clients) {
+      if (!socketAlive.has(ws)) {
+        try {
+          ws.terminate();
+        } catch {
+          // already gone
+        }
+        continue;
+      }
+      socketAlive.delete(ws);
+      try {
+        ws.ping();
+      } catch {
+        // ignore
+      }
+    }
+  }, 30_000);
+  wss.on('close', () => clearInterval(heartbeatTimer));
+
   wss.on('connection', (ws) => {
+    socketAlive.add(ws);
+    ws.on('pong', () => socketAlive.add(ws));
     ws.on('close', () => {
+      socketAlive.delete(ws);
       removePresenceSocket(ws);
       leaveCurrentRoom(ws);
     });
@@ -2775,6 +2856,10 @@ function setupLiveWebSocketServer(
       }
 
       const type = msg.type;
+      if (type === 'ping') {
+        sendJson(ws, { type: 'pong', t: Date.now() });
+        return;
+      }
       if (type === 'presence:identify') {
         const token = typeof msg.token === 'string' ? msg.token.trim() : '';
         const user = token.startsWith('oc.') ? verifyOpenChessToken(token) : null;
@@ -2791,19 +2876,25 @@ function setupLiveWebSocketServer(
       }
 
       const authUser = resolveWsUser(msg, ws);
+      const wsToken = typeof msg.token === 'string' ? msg.token.trim() : '';
+      if (wsToken.startsWith('lip_')) queueLichessIdentity(wsToken);
+      const liIdentity = getLichessIdentity(wsToken);
       const playerName = authUser
         ? authUser.username
-        : typeof msg.name === 'string' && msg.name.trim()
-          ? msg.name.trim().slice(0, 24)
-          : 'Player';
+        : liIdentity
+          ? liIdentity.username
+          : typeof msg.name === 'string' && msg.name.trim()
+            ? msg.name.trim().slice(0, 24)
+            : 'Player';
       const playerAvatar =
         sanitizePublicAvatar(authUser?.profile?.avatarUrl) ||
         sanitizePublicAvatar(typeof msg.avatarUrl === 'string' ? msg.avatarUrl : undefined);
       const playerFlag =
         authUser?.profile?.flag ||
         authUser?.profile?.country ||
+        liIdentity?.flag ||
         (typeof msg.flag === 'string' ? msg.flag.trim().slice(0, 8) : undefined);
-      const playerTitle = authUser?.title;
+      const playerTitle = authUser?.title ?? liIdentity?.title;
 
       // Direct Messaging over WebSocket
       if (type === 'dm:send') {
@@ -2998,7 +3089,8 @@ function setupLiveWebSocketServer(
           requestedCode && !rooms.has(requestedCode) ? requestedCode : generateRoomCode();
         const myRating =
           getPlayerRatingForSpeed(authUser, initialSeconds) ??
-          (typeof msg.playerElo === 'number' ? msg.playerElo : undefined);
+          (typeof msg.playerElo === 'number' ? msg.playerElo : undefined) ??
+          liIdentity?.rating;
         const room: LiveRoom = {
           id: roomId,
           chess: new Chess(),
@@ -3044,6 +3136,14 @@ function setupLiveWebSocketServer(
           sendJson(ws, { type: 'room:error', error: 'Room not found or expired.' });
           return;
         }
+        // Sweep stale player sockets (dead connections not yet reaped) so a
+        // reconnecting client can reclaim its seat in the same game.
+        if (room.whiteSocket && room.whiteSocket.readyState !== WebSocket.OPEN) {
+          room.whiteSocket = null;
+        }
+        if (room.blackSocket && room.blackSocket.readyState !== WebSocket.OPEN) {
+          room.blackSocket = null;
+        }
         leaveCurrentRoom(ws);
         const preferred = msg.preferredColor === 'w' || msg.preferredColor === 'b' ? msg.preferredColor : null;
         let assigned: 'w' | 'b' | null = null;
@@ -3069,7 +3169,8 @@ function setupLiveWebSocketServer(
           playerName === 'OpenChess Player';
         const myRating =
           getPlayerRatingForSpeed(authUser, room.initialSeconds) ??
-          (typeof msg.playerElo === 'number' ? msg.playerElo : undefined);
+          (typeof msg.playerElo === 'number' ? msg.playerElo : undefined) ??
+          liIdentity?.rating;
         const targetRec =
           authUser ??
           (!isGenericName ? usersStore.users[playerName.trim().toLowerCase()] ?? null : null);
