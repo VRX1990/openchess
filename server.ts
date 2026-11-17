@@ -1589,6 +1589,7 @@ interface LiveRoom {
   blackTitle?: string;
   rated?: boolean;
   finalized?: boolean;
+  abandonTimer?: ReturnType<typeof setTimeout> | null;
   drawOfferBy: 'w' | 'b' | null;
   rematchOfferBy?: 'w' | 'b' | null;
   winner: 'w' | 'b' | 'draw' | null;
@@ -2631,9 +2632,32 @@ function setupLiveWebSocketServer(
     if (membership.color === 'b' && room.blackSocket === ws) room.blackSocket = null;
     if (!room.whiteSocket && !room.blackSocket) {
       cleanupRoomLichessBridge(room);
+      if (room.abandonTimer) clearTimeout(room.abandonTimer);
       rooms.delete(room.id);
     } else {
       broadcastRoomState(room);
+      // Opponent left a live game: give them a 30s grace window to reconnect,
+      // then award the win to the player who stayed (or abort if no moves).
+      if (!room.winner) {
+        const leaverColor = membership.color;
+        const movesPlayed = room.historyMeta.length;
+        if (room.abandonTimer) clearTimeout(room.abandonTimer);
+        room.abandonTimer = setTimeout(() => {
+          const seatEmpty = leaverColor === 'w' ? !room.whiteSocket : !room.blackSocket;
+          if (room.winner || !seatEmpty) return;
+          if (movesPlayed === 0) {
+            room.winner = 'draw';
+            room.endReason = 'Opponent left before the game started';
+          } else {
+            room.winner = leaverColor === 'w' ? 'b' : 'w';
+            room.endReason = `${leaverColor === 'w' ? 'White' : 'Black'} left the game`;
+            finalizeRoomResult(room);
+          }
+          cleanupRoomLichessBridge(room);
+          broadcastRoomState(room);
+          room.abandonTimer = null;
+        }, 30_000);
+      }
     }
   };
 
@@ -3210,6 +3234,11 @@ function setupLiveWebSocketServer(
         }
         socketToRoom.set(ws, { roomId, color: assigned });
         room.lastMoveAt = Date.now();
+        // A player (re)took a seat — cancel any pending abandonment.
+        if (room.abandonTimer) {
+          clearTimeout(room.abandonTimer);
+          room.abandonTimer = null;
+        }
         sendJson(ws, { type: 'room:joined', roomId, yourColor: assigned });
         broadcastRoomState(room);
         return;

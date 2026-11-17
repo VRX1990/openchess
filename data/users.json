@@ -670,15 +670,56 @@
       "removedFriends": [],
       "incomingRequests": [],
       "outgoingRequests": [],
-      "playedGames": [],
+      "playedGames": [
+        {
+          "id": "oc-T9Z7DK-1794915826891",
+          "rated": true,
+          "speed": "blitz",
+          "status": "mate",
+          "winner": "white",
+          "white": {
+            "name": "persisttest1",
+            "rating": 1212,
+            "flag": "INT"
+          },
+          "black": {
+            "name": "persisttest2",
+            "rating": 1188,
+            "flag": "INT"
+          },
+          "pgn": "[Event \"?\"]\n[Site \"?\"]\n[Date \"????.??.??\"]\n[Round \"?\"]\n[White \"?\"]\n[Black \"?\"]\n[Result \"*\"]\n\n1. e4 *",
+          "createdAt": 1794915826891,
+          "lastMoveAt": 1794915826891
+        },
+        {
+          "id": "oc-H7D3BC-1794915712529",
+          "rated": true,
+          "speed": "blitz",
+          "status": "mate",
+          "winner": "white",
+          "white": {
+            "name": "persisttest1",
+            "rating": 1200,
+            "flag": "INT"
+          },
+          "black": {
+            "name": "persisttest2",
+            "rating": 1200,
+            "flag": "INT"
+          },
+          "pgn": "[Event \"?\"]\n[Site \"?\"]\n[Date \"????.??.??\"]\n[Round \"?\"]\n[White \"?\"]\n[Black \"?\"]\n[Result \"*\"]\n\n1. e4 e5 *",
+          "createdAt": 1794915712529,
+          "lastMoveAt": 1794915712529
+        }
+      ],
       "perfs": {
         "rapid": {
           "rating": 1200,
           "games": 0
         },
         "blitz": {
-          "rating": 1200,
-          "games": 0
+          "rating": 1223,
+          "games": 2
         },
         "bullet": {
           "rating": 1200,
@@ -690,13 +731,13 @@
         }
       },
       "count": {
-        "all": 0,
-        "win": 0,
+        "all": 2,
+        "win": 2,
         "loss": 0,
         "draw": 0,
-        "rated": 0
+        "rated": 2
       },
-      "leaguePoints": 0,
+      "leaguePoints": 30,
       "ratingHistory": {
         "rapid": [
           {
@@ -708,6 +749,14 @@
           {
             "rating": 1200,
             "ts": 1794911045665
+          },
+          {
+            "rating": 1212,
+            "ts": 1794915712529
+          },
+          {
+            "rating": 1223,
+            "ts": 1794915826891
           }
         ],
         "bullet": [
@@ -729,7 +778,7 @@
         "flag": "INT"
       },
       "createdAt": 1794911045665,
-      "seenAt": 1794912165358
+      "seenAt": 1794915826891
     },
     "persisttest2": {
       "username": "persisttest2",
@@ -744,15 +793,56 @@
       "removedFriends": [],
       "incomingRequests": [],
       "outgoingRequests": [],
-      "playedGames": [],
+      "playedGames": [
+        {
+          "id": "oc-T9Z7DK-1794915826891",
+          "rated": true,
+          "speed": "blitz",
+          "status": "mate",
+          "winner": "white",
+          "white": {
+            "name": "persisttest1",
+            "rating": 1212,
+            "flag": "INT"
+          },
+          "black": {
+            "name": "persisttest2",
+            "rating": 1188,
+            "flag": "INT"
+          },
+          "pgn": "[Event \"?\"]\n[Site \"?\"]\n[Date \"????.??.??\"]\n[Round \"?\"]\n[White \"?\"]\n[Black \"?\"]\n[Result \"*\"]\n\n1. e4 *",
+          "createdAt": 1794915826891,
+          "lastMoveAt": 1794915826891
+        },
+        {
+          "id": "oc-H7D3BC-1794915712529",
+          "rated": true,
+          "speed": "blitz",
+          "status": "mate",
+          "winner": "white",
+          "white": {
+            "name": "persisttest1",
+            "rating": 1200,
+            "flag": "INT"
+          },
+          "black": {
+            "name": "persisttest2",
+            "rating": 1200,
+            "flag": "INT"
+          },
+          "pgn": "[Event \"?\"]\n[Site \"?\"]\n[Date \"????.??.??\"]\n[Round \"?\"]\n[White \"?\"]\n[Black \"?\"]\n[Result \"*\"]\n\n1. e4 e5 *",
+          "createdAt": 1794915712529,
+          "lastMoveAt": 1794915712529
+        }
+      ],
       "perfs": {
         "rapid": {
           "rating": 1200,
           "games": 0
         },
         "blitz": {
-          "rating": 1200,
-          "games": 0
+          "rating": 1177,
+          "games": 2
         },
         "bullet": {
           "rating": 1200,
@@ -764,13 +854,13 @@
         }
       },
       "count": {
-        "all": 0,
+        "all": 2,
         "win": 0,
-        "loss": 0,
+        "loss": 2,
         "draw": 0,
-        "rated": 0
+        "rated": 2
       },
-      "leaguePoints": 0,
+      "leaguePoints": 4,
       "ratingHistory": {
         "rapid": [
           {
@@ -782,6 +872,14 @@
           {
             "rating": 1200,
             "ts": 1794911892248
+          },
+          {
+            "rating": 1188,
+            "ts": 1794915712529
+          },
+          {
+            "rating": 1177,
+            "ts": 1794915826891
           }
         ],
         "bullet": [
@@ -803,7 +901,7 @@
         "flag": "INT"
       },
       "createdAt": 1794911892248,
-      "seenAt": 1794912165463
+      "seenAt": 1794915826891
     }
   }
 }

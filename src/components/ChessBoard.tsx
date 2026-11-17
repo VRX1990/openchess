@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, type CSSProperties } from 'react';
+import { memo, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { Chess, type Color, type PieceSymbol, type Square } from 'chess.js';
 import type { MoveQuality } from '../chess/engine';
 import { ChessPiece } from './ChessPiece';
@@ -85,6 +85,10 @@ interface UserArrow {
   to: string;
 }
 
+// Stable default props (new array literals each render would defeat memo).
+const EMPTY_HIGHLIGHTS: { square: string; color: 'green' | 'red' | 'yellow' | 'blue' }[] = [];
+const EMPTY_ARROWS: { from: string; to: string; color?: 'green' | 'red' | 'yellow' | 'blue' }[] = [];
+
 interface DragState {
   from: Square;
   pieceType: PieceSymbol;
@@ -98,7 +102,7 @@ interface DragState {
   hoverSquare: Square | null;
 }
 
-export function ChessBoard({
+function ChessBoardBase({
   fen,
   orientation = 'w',
   interactive = true,
@@ -109,8 +113,8 @@ export function ChessBoard({
   moveBadge = null,
   moveToast = null,
   bestMoveArrow = null,
-  highlightSquares = [],
-  extraArrows = [],
+  highlightSquares = EMPTY_HIGHLIGHTS,
+  extraArrows = EMPTY_ARROWS,
   premove = null,
   onPremove,
   hideCoordinates = false,
@@ -851,3 +855,5 @@ export function ChessBoard({
     </div>
   );
 }
+
+export const ChessBoard = memo(ChessBoardBase);

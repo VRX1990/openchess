@@ -35,7 +35,6 @@ import {
   type BotId,
   analyzeClientStockfish19Nnue,
   checkBlunderFast,
-  chooseBotMove,
   computeClientStockfish19NnueMultiPv,
   evaluatePosition,
   findBestMove,
@@ -45,10 +44,10 @@ import {
   type HintCandidate,
   type MoveQuality,
 } from '../chess/engine';
+import { requestBotMove, requestCoachLesson } from '../chess/asyncEngine';
 import {
   COACH_PROFILES,
   COACH_STRENGTH_LEVELS,
-  evaluateCoachStudentMove,
   explainCoachReplyMove,
   getCoachProfile,
   loadSelectedCoachId,
@@ -718,39 +717,60 @@ export function PlayView({
         }
       }
 
-      // Interactive Teaching Feedback + Guard in Play Coach mode
+      // Interactive Teaching Feedback + Guard in Play Coach mode.
+      // Fast path: only the cheap blunder pre-check runs synchronously so the
+      // move applies with zero lag. The full lesson (two engine searches) is
+      // deferred until right after the move lands — the board never freezes.
       if (isCoachMode && moverColor === playerColor) {
-        const lesson = evaluateCoachStudentMove(
-          fenBefore,
-          from,
-          to,
-          promotion ?? 'q',
-          game.history().length,
-          activeCoach.id,
-        );
-        if (lesson) {
-          setCoachFeedback(bypassGuard ? { ...lesson, shouldPause: false } : lesson);
-          setCoachReplyNote(null);
-          if (!bypassGuard && coachGuard && lesson.shouldPause) {
-            playErrorSound();
-            setPendingBlunder({
-              from,
-              to,
-              promotion,
-              san: lesson.san,
-              reason: lesson.tacticalWarning ?? lesson.explanation,
-              bestSan: lesson.bestSan,
-              bestFrom: lesson.bestFrom,
-              bestTo: lesson.bestTo,
-              cpLoss: lesson.cpLoss,
-            });
-            setHintSquares({ from: lesson.bestFrom, to: lesson.bestTo });
-            return false;
-          }
-          // Move is really being played now — pin its quality badge above the
-          // destination piece (stays until the coach replies).
-          showCoachMoveToast(to, lesson.quality, lesson.san);
+        let attemptedSan = '';
+        try {
+          const sanProbe = new Chess(fenBefore);
+          attemptedSan = sanProbe.move({ from, to, promotion: promotion ?? 'q' })?.san ?? '';
+        } catch {
+          attemptedSan = '';
         }
+        const preGuard =
+          !bypassGuard && coachGuard
+            ? checkBlunderFast(fenBefore, from, to, promotion ?? 'q')
+            : null;
+        if (preGuard?.isBlunder) {
+          playErrorSound();
+          setPendingBlunder({
+            from,
+            to,
+            promotion,
+            san: attemptedSan,
+            reason: preGuard.reason,
+            bestSan: preGuard.bestSan,
+            bestFrom: preGuard.bestFrom,
+            bestTo: preGuard.bestTo,
+            cpLoss: preGuard.cpLoss,
+          });
+          setHintSquares({ from: preGuard.bestFrom, to: preGuard.bestTo });
+          return false;
+        }
+        const clsFen = fenBefore;
+        const clsFrom = from;
+        const clsTo = to;
+        const clsPromo = promotion ?? 'q';
+        const clsPly = game.history().length;
+        const clsCoach = activeCoach.id;
+        // Classified off-thread (worker) — the board never blocks. Stale-guard:
+        // if another move landed meanwhile, this lesson no longer applies.
+        void requestCoachLesson({
+          fen: clsFen,
+          from: clsFrom,
+          to: clsTo,
+          promotion: clsPromo,
+          ply: clsPly,
+          coachId: clsCoach,
+        }).then((lesson) => {
+          if (!lesson) return;
+          if (chessRef.current.history().length !== clsPly + 1) return;
+          setCoachFeedback({ ...lesson, shouldPause: false });
+          setCoachReplyNote(null);
+          showCoachMoveToast(clsTo, lesson.quality, lesson.san);
+        });
       }
 
       // Instant Coach OpenChess Blunder Guard on every player turn (offline/bot games)
@@ -834,17 +854,21 @@ export function PlayView({
           const clsPromo: PieceSymbol = move.promotion ?? 'q';
           const clsPly = game.history().length - 1;
           const clsCoach = activeCoach.id;
+          // Badge pops after the coach's slide animation; classification runs
+          // off-thread (worker) so nothing here can stutter the animation.
           window.setTimeout(() => {
-            const coachLesson = evaluateCoachStudentMove(
-              clsFen,
-              clsFrom,
-              clsTo,
-              clsPromo,
-              clsPly,
-              clsCoach,
-            );
-            showCoachMoveToast(clsTo, coachLesson?.quality ?? 'Good', clsSan);
-          }, 80);
+            void requestCoachLesson({
+              fen: clsFen,
+              from: clsFrom,
+              to: clsTo,
+              promotion: clsPromo,
+              ply: clsPly,
+              coachId: clsCoach,
+            }).then((coachLesson) => {
+              if (chessRef.current.history().length !== clsPly + 1) return;
+              showCoachMoveToast(clsTo, coachLesson?.quality ?? 'Good', clsSan);
+            });
+          }, 350);
         }
 
         if (move.color === 'w' && tc.incrementSeconds > 0) {
@@ -904,6 +928,15 @@ export function PlayView({
       applyMoveOnBoard(pending.from, pending.to, 'q', true);
     }
   }, [fen, premove, gameOverState, viewPly, playerColor, opponentType, liveChess, applyMoveOnBoard]);
+
+  // Stable board-badge prop so memoized ChessBoard skips clock-tick re-renders.
+  const boardMoveBadge = useMemo(
+    () =>
+      pendingBlunder
+        ? { square: pendingBlunder.to, quality: coachFeedback?.quality ?? 'Blunder' }
+        : null,
+    [pendingBlunder, coachFeedback],
+  );
 
   const startNewGame = useCallback(
     (nextColor?: Color, nextTc?: TimeControl, keepOnlineMode = false) => {
@@ -1535,16 +1568,17 @@ export function PlayView({
       }
 
       if (cancelled) return;
-      const botMove = chooseBotMove(
+      // Off-thread search (web worker): the UI stays perfectly smooth while
+      // the bot/coach thinks. Stale-guards: effect cancelled, or the position
+      // changed (takeback / new game / online move) before the result arrived.
+      const botMove = await requestBotMove(
         fen,
         isCoachMode ? activeCoach.id : botId,
-        Math.random,
         effectiveBotElo,
       );
-      if (botMove) {
-        recordCoachExplanation(fen, botMove.from, botMove.to, botMove.promotion);
-        applyMoveOnBoard(botMove.from, botMove.to, botMove.promotion);
-      }
+      if (cancelled || !botMove || chessRef.current.fen() !== fen) return;
+      recordCoachExplanation(fen, botMove.from, botMove.to, botMove.promotion);
+      applyMoveOnBoard(botMove.from, botMove.to, botMove.promotion);
     }, 320);
 
     return () => {
@@ -2731,6 +2765,19 @@ export function PlayView({
               </div>
             )}
 
+            {/* Opponent Disconnected Banner (grace window before forfeit) */}
+            {isOnlineMode &&
+              !onlineInfo.opponentConnected &&
+              !gameOverState &&
+              history.length > 0 && (
+                <div className="mb-1.5 px-3 py-2 rounded-xl bg-[#262421] border border-[#E59A28]/60 flex items-center gap-2 text-xs">
+                  <Clock className="w-4 h-4 text-[#E59A28] shrink-0" />
+                  <span className="text-white font-semibold">
+                    Opponent disconnected — waiting up to 30s. If they don't return, you win.
+                  </span>
+                </div>
+              )}
+
             {/* Interactive Teaching Card / Blunder Guard / Speech Bubble */}
             {pendingBlunder ? (
               <div
@@ -2972,11 +3019,7 @@ export function PlayView({
                         : false
                   }
                   hintSquares={isOnlineMode ? null : hintSquares}
-                  moveBadge={
-                    pendingBlunder
-                      ? { square: pendingBlunder.to, quality: coachFeedback?.quality ?? 'Blunder' }
-                      : null
-                  }
+                  moveBadge={boardMoveBadge}
                   moveToast={isCoachMode && viewPly === null ? coachMoveToast : null}
                   premove={premove}
                   onPremove={opponentType !== 'local' ? setPremove : undefined}

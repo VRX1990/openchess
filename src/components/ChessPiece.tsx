@@ -1,3 +1,4 @@
+import { memo } from 'react';
 import type { Color, PieceSymbol } from 'chess.js';
 
 interface ChessPieceProps {
@@ -10,7 +11,7 @@ interface ChessPieceProps {
  * Chess.com Neo-inspired Staunton SVG pieces with two-tone depth shading
  * so both White and Black pieces read crisply on dark-green, walnut, and slate boards.
  */
-export function ChessPiece({ type, color, className = 'w-full h-full' }: ChessPieceProps) {
+function ChessPieceBase({ type, color, className = 'w-full h-full' }: ChessPieceProps) {
   const isWhite = color === 'w';
   const fill = isWhite ? '#FFFFFF' : '#585552';
   const shade = isWhite ? '#DCD8CE' : '#3A3836';
@@ -226,3 +227,5 @@ export function ChessPiece({ type, color, className = 'w-full h-full' }: ChessPi
       );
   }
 }
+
+export const ChessPiece = memo(ChessPieceBase);
