@@ -311,39 +311,20 @@ export function PlayView({
     cpLoss: number;
   } | null>(null);
   const [coachFeedback, setCoachFeedback] = useState<CoachLessonFeedback | null>(null);
+  // Floating badge above the most recently moved piece. Shows ONLY the logo
+  // (book / !! / ! / ?! / ? / ??). The player's badge stays visible until the
+  // coach replies, then the coach's badge replaces it — alternating every move.
   const [coachMoveToast, setCoachMoveToast] = useState<{
     id: number;
     square: string;
     quality: MoveQuality;
     san: string;
   } | null>(null);
-  const coachToastTimerRef = useRef<number | null>(null);
-  const clearCoachMoveToast = useCallback(() => {
-    if (coachToastTimerRef.current) {
-      window.clearTimeout(coachToastTimerRef.current);
-      coachToastTimerRef.current = null;
-    }
-    setCoachMoveToast(null);
+  const showCoachMoveToast = useCallback((square: string, quality: MoveQuality, san: string) => {
+    setCoachMoveToast({ id: Date.now(), square, quality, san });
   }, []);
-  const showCoachMoveToast = useCallback(
-    (square: string, quality: MoveQuality, san: string) => {
-      if (coachToastTimerRef.current) {
-        window.clearTimeout(coachToastTimerRef.current);
-      }
-      setCoachMoveToast({ id: Date.now(), square, quality, san });
-      coachToastTimerRef.current = window.setTimeout(() => {
-        setCoachMoveToast(null);
-        coachToastTimerRef.current = null;
-      }, 5000);
-    },
-    [],
-  );
-  useEffect(() => {
-    return () => {
-      if (coachToastTimerRef.current) {
-        window.clearTimeout(coachToastTimerRef.current);
-      }
-    };
+  const clearCoachMoveToast = useCallback(() => {
+    setCoachMoveToast(null);
   }, []);
   const [coachReplyNote, setCoachReplyNote] = useState<string | null>(null);
   const [queuedCoachPrompt, setQueuedCoachPrompt] = useState<{ id: number; text: string } | null>(
@@ -747,7 +728,6 @@ export function PlayView({
         if (lesson) {
           setCoachFeedback(bypassGuard ? { ...lesson, shouldPause: false } : lesson);
           setCoachReplyNote(null);
-          showCoachMoveToast(to, lesson.quality, lesson.san);
           if (!bypassGuard && coachGuard && lesson.shouldPause) {
             playErrorSound();
             setPendingBlunder({
@@ -764,6 +744,9 @@ export function PlayView({
             setHintSquares({ from: lesson.bestFrom, to: lesson.bestTo });
             return false;
           }
+          // Move is really being played now — pin its quality badge above the
+          // destination piece (stays until the coach replies).
+          showCoachMoveToast(to, lesson.quality, lesson.san);
         }
       }
 
@@ -836,6 +819,20 @@ export function PlayView({
         });
         setHintSquares(null);
         setClockRunning(true);
+
+        // Coach mode: classify the coach's own reply and move the floating
+        // badge onto the coach's piece (replacing the player's badge).
+        if (isCoachMode && move.color !== playerColor) {
+          const coachLesson = evaluateCoachStudentMove(
+            fenBefore,
+            move.from,
+            move.to,
+            move.promotion ?? 'q',
+            game.history().length - 1,
+            activeCoach.id,
+          );
+          showCoachMoveToast(move.to, coachLesson?.quality ?? 'Good', move.san);
+        }
 
         if (move.color === 'w' && tc.incrementSeconds > 0) {
           setWhiteClock((s) => s + tc.incrementSeconds);

@@ -553,9 +553,29 @@ interface StoredUsersFile {
 }
 
 const LEGACY_WORKSPACE_STORE_PATH = path.resolve(__dirname, '.openchess-users.json');
-const USERS_STORE_PATH = path.join(os.tmpdir(), 'openchess-client-proxy-cache.json');
+// Durable store: lives next to server.ts so accounts, friends, games, DMs and
+// elo survive container restarts (os.tmpdir() is wiped on every restart —
+// that was silently resetting players' data).
+const DATA_DIR = path.resolve(__dirname, 'data');
+const USERS_STORE_PATH = path.join(DATA_DIR, 'users.json');
+// Secondary best-effort mirror (same location older builds used).
+const TMP_MIRROR_STORE_PATH = path.join(os.tmpdir(), 'openchess-client-proxy-cache.json');
+
+function readUsersStoreFile(filePath: string): Record<string, StoredUserAccount> | null {
+  try {
+    if (!fs.existsSync(filePath)) return null;
+    const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8')) as Partial<StoredUsersFile>;
+    if (parsed.users && typeof parsed.users === 'object') {
+      return parsed.users;
+    }
+  } catch {
+    // unreadable/corrupt file -> ignore
+  }
+  return null;
+}
 
 function loadUsersStore(): StoredUsersFile {
+  // One-time cleanup of the ancient workspace-level store.
   try {
     if (fs.existsSync(LEGACY_WORKSPACE_STORE_PATH)) {
       fs.unlinkSync(LEGACY_WORKSPACE_STORE_PATH);
@@ -563,15 +583,14 @@ function loadUsersStore(): StoredUsersFile {
   } catch {
     // ignore cleanup error
   }
-  try {
-    if (fs.existsSync(USERS_STORE_PATH)) {
-      const parsed = JSON.parse(fs.readFileSync(USERS_STORE_PATH, 'utf8')) as Partial<StoredUsersFile>;
-      if (parsed.users && typeof parsed.users === 'object') {
-        return { hmacSecret: DETERMINISTIC_HMAC_SECRET, users: parsed.users };
-      }
-    }
-  } catch {
-    // start clean if store is unreadable
+  let users = readUsersStoreFile(USERS_STORE_PATH);
+  if (!users) {
+    // First boot after upgrading: migrate data written by older builds
+    // (which kept the store in tmpdir) so nothing is lost.
+    users = readUsersStoreFile(TMP_MIRROR_STORE_PATH);
+  }
+  if (users) {
+    return { hmacSecret: DETERMINISTIC_HMAC_SECRET, users };
   }
   const fresh: StoredUsersFile = {
     hmacSecret: DETERMINISTIC_HMAC_SECRET,
@@ -582,12 +601,19 @@ function loadUsersStore(): StoredUsersFile {
 }
 
 function saveUsersStore(data: StoredUsersFile) {
+  const payload = JSON.stringify(
+    { hmacSecret: DETERMINISTIC_HMAC_SECRET, users: data.users },
+    null,
+    2,
+  );
   try {
-    fs.writeFileSync(
-      USERS_STORE_PATH,
-      JSON.stringify({ hmacSecret: DETERMINISTIC_HMAC_SECRET, users: data.users }, null, 2),
-      'utf8',
-    );
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+    fs.writeFileSync(USERS_STORE_PATH, payload, 'utf8');
+  } catch {
+    // ignore read-only disk environments
+  }
+  try {
+    fs.writeFileSync(TMP_MIRROR_STORE_PATH, payload, 'utf8');
   } catch {
     // ignore read-only disk environments
   }

@@ -781,7 +781,7 @@ export function ChessBoard({
       )}
       </div>
 
-      {/* 5-second Floating Move Quality Callout Above Moved Square */}
+      {/* Floating Move Quality Badge Above Moved Square (logo only, no words) */}
       {moveToast && toastCoords && toastMeta && (
         <div
           key={moveToast.id}
@@ -802,17 +802,9 @@ export function ChessBoard({
         >
           <div
             style={{ borderColor: toastMeta.bg }}
-            className="relative px-2.5 py-1 rounded-lg bg-[#1D1B18]/95 border-2 shadow-[0_6px_20px_rgba(0,0,0,0.65)] flex items-center gap-1.5 whitespace-nowrap"
+            className="relative p-1 rounded-lg bg-[#1D1B18]/95 border-2 shadow-[0_6px_20px_rgba(0,0,0,0.65)] flex items-center justify-center"
           >
-            <MoveBadge quality={moveToast.quality} size="sm" />
-            <span className={`text-xs font-extrabold tracking-tight ${toastMeta.textColor}`}>
-              {toastMeta.label}
-            </span>
-            {moveToast.san && (
-              <span className="text-[11px] font-mono font-bold text-[#DEDAD2]">
-                {moveToast.san}
-              </span>
-            )}
+            <MoveBadge quality={moveToast.quality} size="md" />
           </div>
         </div>
       )}
