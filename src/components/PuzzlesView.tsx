@@ -20,6 +20,7 @@ import {
   ChevronDown,
   ChevronRight,
   Search,
+  ExternalLink,
 } from 'lucide-react';
 import { PUZZLES, type ChessPuzzle } from '../chess/content';
 import type { LichessAccount, NormalizedLichessPuzzle } from '../chess/lichess';
@@ -88,6 +89,7 @@ type ActivePuzzleItem = ChessPuzzle & {
   playersSummary?: string;
   plays?: number;
   themes?: string[];
+  lichessUrl?: string;
 };
 
 type PuzzleThemeId = string;
@@ -682,6 +684,10 @@ export function PuzzlesView({
   const [openingSearchQuery, setOpeningSearchQuery] = useState('');
   const [expandedCategories, setExpandedCategories] = useState<Record<string, boolean>>({});
   const [puzzleQueue, setPuzzleQueue] = useState<ActivePuzzleItem[]>(() => [...PUZZLES]);
+  // "Load any Lichess puzzle" — by bare id or a lichess.org/training/… link.
+  const [puzzleIdInput, setPuzzleIdInput] = useState('');
+  const [puzzleIdLoading, setPuzzleIdLoading] = useState(false);
+  const [puzzleIdError, setPuzzleIdError] = useState<string | null>(null);
   const [puzzleIdx, setPuzzleIdx] = useState(0);
   const [puzzleLoading, setPuzzleLoading] = useState(false);
   const [puzzleError, setPuzzleError] = useState<string | null>(null);
@@ -937,6 +943,71 @@ export function PuzzlesView({
     }
     void fetchRatedPuzzles(themeId, true, 'solve');
   };
+
+  // Load ANY Lichess puzzle by bare id or pasted lichess.org/training/… URL.
+  const loadPuzzleById = useCallback(
+    async (raw: string) => {
+      const clean = raw.trim();
+      if (!clean) return;
+      setPuzzleIdLoading(true);
+      setPuzzleIdError(null);
+      try {
+        const res = await fetch(`/api/lichess/puzzle/byid/${encodeURIComponent(clean)}`);
+        const data = await res.json();
+        if (!res.ok || !Array.isArray(data.puzzles) || !data.puzzles[0]) {
+          throw new Error(data.error || 'Puzzle not found.');
+        }
+        const loaded = data.puzzles[0] as NormalizedLichessPuzzle;
+        seenPuzzleIdsRef.current.add(loaded.id);
+        userInteractedRef.current = true;
+        setPuzzleQueue((prev) => [loaded, ...prev.filter((q) => q.id !== loaded.id)]);
+        setPuzzleIdx(0);
+        setPuzzleTheme('mix');
+        setViewMode('solve');
+        resetBoardToPuzzle(loaded);
+      } catch (err: unknown) {
+        setPuzzleIdError(
+          err instanceof Error ? err.message : 'Could not load that puzzle.',
+        );
+      } finally {
+        setPuzzleIdLoading(false);
+      }
+    },
+    [resetBoardToPuzzle],
+  );
+
+  // Keep the Daily card truthful: silently re-check it on window focus and
+  // every 15 min (Lichess rotates it at UTC midnight) without disturbing any
+  // solve in progress — only the card and preview are updated.
+  useEffect(() => {
+    const refreshDailyCard = async () => {
+      try {
+        const headers: Record<string, string> = {};
+        if (lichessToken) headers.Authorization = `Bearer ${lichessToken}`;
+        const res = await fetch('/api/lichess/puzzle?theme=daily', { headers });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!Array.isArray(data.puzzles) || data.puzzles.length === 0) return;
+        const fetched = data.puzzles as NormalizedLichessPuzzle[];
+        if (fetched[0]) {
+          setDailyPuzzle((prev) => ({
+            ...fetched[0],
+            plays: fetched[0].plays ?? prev.plays,
+          }));
+        }
+        if (fetched[1]) setHealthyMixPreview(fetched[1]);
+      } catch {
+        // keep whatever is displayed
+      }
+    };
+    const onFocus = () => void refreshDailyCard();
+    window.addEventListener('focus', onFocus);
+    const id = window.setInterval(() => void refreshDailyCard(), 15 * 60 * 1000);
+    return () => {
+      window.removeEventListener('focus', onFocus);
+      window.clearInterval(id);
+    };
+  }, [lichessToken]);
 
   // Load live Daily Puzzle, Healthy Mix, and Attraction previews on mount and when Lichess auth changes
   useEffect(() => {
@@ -1499,6 +1570,22 @@ export function PuzzlesView({
                 <div className="text-xs sm:text-sm text-[#9E998F] mt-0.5 tabular-nums">
                   Played {(dailyPuzzle.plays ?? 66913).toLocaleString()} times
                 </div>
+                {typeof dailyPuzzle.rating === 'number' && (
+                  <div className="text-[11px] text-[#9E998F] mt-0.5 tabular-nums">
+                    Rating {dailyPuzzle.rating}
+                  </div>
+                )}
+                {dailyPuzzle.lichessUrl && dailyPuzzle.id.startsWith('puzzle-') && (
+                  <a
+                    href={dailyPuzzle.lichessUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-1 text-[11px] text-[#7FC4ED] hover:underline mt-1"
+                  >
+                    <ExternalLink className="w-3 h-3" />
+                    Same puzzle as lichess.org — view there
+                  </a>
+                )}
               </div>
 
               <div className="flex items-center gap-2 text-xs sm:text-sm font-semibold text-[#DEDAD2]">
@@ -1667,6 +1754,37 @@ export function PuzzlesView({
               </button>
             )}
           </div>
+        </div>
+
+        {/* Load any Lichess puzzle (old or new) by id or training link */}
+        <div className="px-1 pb-1 pt-2">
+          <div className="flex items-center gap-2">
+            <div className="relative flex flex-1 items-center">
+              <ExternalLink className="w-4.5 h-4.5 w-[18px] h-[18px] text-[#9E998F] absolute left-4 pointer-events-none" />
+              <input
+                type="text"
+                value={puzzleIdInput}
+                onChange={(e) => setPuzzleIdInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !puzzleIdLoading) void loadPuzzleById(puzzleIdInput);
+                }}
+                placeholder="Any Lichess puzzle — paste id or training link"
+                aria-label="Load a Lichess puzzle by id or link"
+                className="w-full h-11 pl-11 pr-4 rounded-full bg-[#393734] text-white placeholder-[#9E998F] text-sm border border-white/8 focus:outline-none focus:border-[#81B64C]/60"
+              />
+            </div>
+            <button
+              type="button"
+              onClick={() => void loadPuzzleById(puzzleIdInput)}
+              disabled={puzzleIdLoading || !puzzleIdInput.trim()}
+              className="h-11 px-4 rounded-full bg-[#81B64C] disabled:bg-[#4A4A45] disabled:text-[#84817B] text-[#191815] text-sm font-extrabold cursor-pointer disabled:cursor-not-allowed shrink-0"
+            >
+              {puzzleIdLoading ? '…' : 'Load'}
+            </button>
+          </div>
+          {puzzleIdError && (
+            <p className="text-xs text-[#FF9B91] mt-1.5 px-2">{puzzleIdError}</p>
+          )}
         </div>
 
         {trimmedQuery ? (

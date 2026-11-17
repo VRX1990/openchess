@@ -20,6 +20,8 @@ import {
   User,
   MessageSquare,
   Trophy,
+  Link2,
+  X,
 } from 'lucide-react';
 import { setSoundMuted } from './chess/sound';
 import { DEFAULT_PREP_PLAN } from './chess/content';
@@ -107,6 +109,15 @@ export default function App() {
     }
     return 'home';
   });
+  // Auto-connect: signed-in users without a linked Lichess account get a
+  // one-time prompt — puzzles, games and ratings only sync with a real link.
+  const [lichessLinkPromptDismissed, setLichessLinkPromptDismissed] = useState(false);
+  const lichessLinkUsername = lichessSession?.account.username ?? '';
+  const showLichessLinkBanner =
+    Boolean(lichessSession) &&
+    lichessSession?.hasOnlineToken === false &&
+    !lichessLinkPromptDismissed &&
+    activeTab !== 'auth';
 
   const [boardTheme, setBoardTheme] = useState<BoardTheme>('green');
   const [selectedCoachId, setSelectedCoachId] = useState<CoachPersonaId>(() =>
@@ -441,6 +452,48 @@ export default function App() {
 
   return (
     <div className="min-h-dvh bg-[#302E2B] text-white flex flex-col lg:flex-row">
+      {/* Lichess auto-connect prompt (signed in, no linked account) */}
+      {showLichessLinkBanner && (
+        <div className="fixed bottom-16 lg:bottom-4 left-1/2 -translate-x-1/2 z-50 w-[calc(100%-24px)] max-w-md px-3 py-2.5 rounded-xl bg-[#262421] border border-[#81B64C]/50 shadow-[0_10px_30px_rgba(0,0,0,0.55)] flex items-center gap-2.5">
+          <Link2 className="w-5 h-5 text-[#81B64C] shrink-0" />
+          <div className="min-w-0 flex-1">
+            <div className="text-xs font-extrabold text-white">
+              Link your Lichess account
+            </div>
+            <div className="text-[11px] text-[#B8B4AC] leading-snug">
+              Sync puzzles, games and ratings with lichess.org automatically.
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              void linkLichessOAuth().catch(() => {});
+            }}
+            className="px-3 py-1.5 rounded-lg bg-[#81B64C] hover:bg-[#8EC556] text-[#191815] text-xs font-extrabold shrink-0 cursor-pointer"
+          >
+            Connect
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setLichessLinkPromptDismissed(true);
+              try {
+                localStorage.setItem(
+                  `openchess_linkprompt_${lichessLinkUsername.toLowerCase()}`,
+                  '1',
+                );
+              } catch {
+                // ignore storage errors
+              }
+            }}
+            aria-label="Dismiss"
+            className="w-7 h-7 rounded-lg hover:bg-white/10 flex items-center justify-center text-[#9E998F] shrink-0 cursor-pointer"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
       {/* Desktop Left Sidebar Rail */}
       <aside className="hidden lg:flex lg:w-52 xl:w-56 bg-[#262421] border-r border-white/[0.06] flex-col justify-between shrink-0 p-3">
         <div className="space-y-5">

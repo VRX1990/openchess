@@ -8338,6 +8338,36 @@ async function startServer() {
     res.json(debrief);
   });
 
+  // Load ANY Lichess puzzle by id (old or new) — accepts a bare id or a
+  // lichess.org/training/{id} URL. Public upstream endpoint, no token needed.
+  app.get('/api/lichess/puzzle/byid/:id', async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    const rawId = typeof req.params.id === 'string' ? req.params.id.trim() : '';
+    const fromUrl = rawId.match(/training\/([A-Za-z0-9]+)/);
+    const puzzleId = (fromUrl ? fromUrl[1] : rawId).replace(/^puzzle-/, '');
+    if (!/^[A-Za-z0-9]{3,12}$/.test(puzzleId)) {
+      res.status(400).json({ error: 'Invalid puzzle id.' });
+      return;
+    }
+    try {
+      const upstream = await fetch(`https://lichess.org/api/puzzle/${encodeURIComponent(puzzleId)}`, {
+        headers: { Accept: 'application/json', 'User-Agent': 'OpenChess/1.0' },
+        signal: AbortSignal.timeout(6000),
+      });
+      if (!upstream.ok) {
+        res.status(upstream.status === 404 ? 404 : 502).json({
+          error: upstream.status === 404 ? 'No Lichess puzzle with that id.' : 'Lichess is unreachable right now.',
+        });
+        return;
+      }
+      const raw = (await upstream.json()) as LichessRawPuzzle;
+      const normalized = convertLichessPayload(raw, 'mix');
+      res.json({ theme: 'byid', puzzles: [normalized] });
+    } catch {
+      res.status(502).json({ error: 'Could not reach Lichess for that puzzle.' });
+    }
+  });
+
   app.get('/api/lichess/puzzle/activity', async (req, res) => {
     const auth = resolveOnlineToken(req);
     const token =
@@ -8466,6 +8496,20 @@ async function startServer() {
           saveUsersStore(usersStore);
           updatedAccount = { ...synced.account, email: auth.openChessUser.email };
         }
+      } else if (batchRes.ok) {
+        // Raw Lichess OAuth token (lip_…): no OpenChess record behind this
+        // request, so refresh the account directly with the same token so the
+        // client sees the new puzzle rating right away.
+        updatedAccount = await fetch('https://lichess.org/api/account', {
+          headers: {
+            Authorization: `Bearer ${auth.onlineToken}`,
+            Accept: 'application/json',
+            'User-Agent': 'OpenChess/1.0',
+          },
+          signal: AbortSignal.timeout(5000),
+        })
+          .then((r) => (r.ok ? (r.json() as Promise<Record<string, any>>).catch(() => null) : null))
+          .catch(() => null);
       }
 
       res.json({
@@ -8578,6 +8622,9 @@ async function startServer() {
   const puzzlePoolByTheme = new Map<string, NormalizedLichessPuzzle[]>();
 
   app.get('/api/lichess/puzzle', async (req, res) => {
+    // Never let the edge cache puzzle lists — the daily rotates at UTC
+    // midnight and a cached response would show yesterday's puzzle.
+    res.setHeader('Cache-Control', 'no-store');
     const rawTheme = typeof req.query.theme === 'string' ? req.query.theme.trim() : 'daily';
     const theme = /^[a-zA-Z0-9_-]{2,64}$/.test(rawTheme) ? rawTheme : 'daily';
     const auth = resolveOnlineToken(req);
